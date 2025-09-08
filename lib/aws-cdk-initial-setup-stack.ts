@@ -1,4 +1,4 @@
-import { Stack, StackProps, CfnParameter, App } from "aws-cdk-lib";
+import { Stack, StackProps } from "aws-cdk-lib";
 import { aws_budgets as budgets } from "aws-cdk-lib";
 import { aws_sns as sns } from "aws-cdk-lib";
 import { aws_sns_subscriptions as subscriptions } from "aws-cdk-lib";
@@ -7,6 +7,10 @@ import * as dotenv from "dotenv";
 
 // Load environment variables from .env file
 dotenv.config();
+
+// The total budget limit needs to be higher than your highest alarm.
+// The highest alarm is $0.04 * 2^15 = $1310.72. We'll set the budget a bit higher.
+const TOTAL_BUDGET_LIMIT_USD = 1500;
 
 export class AwsBudgetAlarmsStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
@@ -26,43 +30,34 @@ export class AwsBudgetAlarmsStack extends Stack {
       );
     }
 
-    // This is the overall budget limit. It should be higher than your highest alarm threshold.
-    // The highest alarm will be $0.04 * 2^15 = $1310.72. We'll set the budget a bit higher.
-    const totalBudgetLimitUSD = 1500;
-
-    // --- 1. Create an SNS Topic for Notifications ---
-    // All budget alarms will send a message to this single topic.
+    // --- 1. Create a SINGLE SNS Topic for all Notifications ---
+    // Both budgets will send alerts here.
     const budgetTopic = new sns.Topic(this, "BudgetAlertsTopic", {
       displayName: "AWS Budget Alerts",
     });
 
     // --- 2. Create an Email Subscription ---
-    // This subscribes your email address to the SNS topic.
-    // AWS will send you a confirmation email. You MUST click the link in it to activate the subscription.
+    // You only need one subscription for the topic.
     budgetTopic.addSubscription(
       new subscriptions.EmailSubscription(alertEmailAddress)
     );
 
     // --- 3. Generate the 16 Alarm Thresholds ---
-    const notifications = [];
+    // We will generate all 16, then split them into two arrays.
+    const allNotifications = [];
     const numberOfAlarms = 16;
     let currentThreshold = 0.04; // Start at 4 cents
 
     for (let i = 0; i < numberOfAlarms; i++) {
-      // The Budgets API uses percentages of the total budget limit for thresholds.
-      // So, we calculate what percentage our dollar amount is of the total limit.
       const thresholdPercentage =
-        (currentThreshold / totalBudgetLimitUSD) * 100;
-
-      notifications.push({
-        // A notification is triggered when ACTUAL spend is GREATER_THAN the threshold.
+        (currentThreshold / TOTAL_BUDGET_LIMIT_USD) * 100;
+      allNotifications.push({
         notification: {
           notificationType: "ACTUAL",
           comparisonOperator: "GREATER_THAN",
           threshold: thresholdPercentage,
           thresholdType: "PERCENTAGE",
         },
-        // It sends the alert to the subscribers of our SNS topic.
         subscribers: [
           {
             subscriptionType: "SNS",
@@ -70,28 +65,40 @@ export class AwsBudgetAlarmsStack extends Stack {
           },
         ],
       });
-
-      // Double the threshold for the next loop iteration.
       currentThreshold *= 2;
     }
 
-    // --- 4. Create the AWS Budget Resource ---
-    // We use the CfnBudget construct (L1) as it provides direct access to the
-    // `NotificationsWithSubscribers` property, making it easy to add multiple notifications.
-    new budgets.CfnBudget(this, "MonthlyAccountBudget", {
+    // --- 4. Create the TWO AWS Budget Resources ---
+
+    // **Budget 1: Contains the first 8 notifications**
+    new budgets.CfnBudget(this, "MonthlyAccountBudgetPart1", {
       budget: {
-        budgetName: "Total-Monthly-Account-Spend-Budget",
+        budgetName: "Total-Monthly-Account-Spend-Budget-Part1",
         budgetType: "COST",
         timeUnit: "MONTHLY",
-        // Note: The budget limit amount doesn't trigger alerts itself.
-        // The notifications we defined above are what trigger the alerts.
         budgetLimit: {
-          amount: totalBudgetLimitUSD,
+          amount: TOTAL_BUDGET_LIMIT_USD,
           unit: "USD",
         },
       },
-      // Attach all 16 of our generated notifications.
-      notificationsWithSubscribers: notifications,
+      // Slice the first 8 notifications from the main array
+      notificationsWithSubscribers: allNotifications.slice(0, 8),
+    });
+
+    // **Budget 2: Contains the next 8 notifications**
+    new budgets.CfnBudget(this, "MonthlyAccountBudgetPart2", {
+      budget: {
+        // A slightly different name to avoid conflicts
+        budgetName: "Total-Monthly-Account-Spend-Budget-Part2",
+        budgetType: "COST",
+        timeUnit: "MONTHLY",
+        budgetLimit: {
+          amount: TOTAL_BUDGET_LIMIT_USD,
+          unit: "USD",
+        },
+      },
+      // Slice the remaining 8 notifications from the main array
+      notificationsWithSubscribers: allNotifications.slice(8, 16),
     });
   }
 }
