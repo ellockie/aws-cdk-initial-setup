@@ -8,13 +8,26 @@ import * as dotenv from "dotenv";
 // Load environment variables from .env file
 dotenv.config();
 
-// The total budget limit needs to be higher than your highest alarm.
-// The highest alarm is $0.04 * 2^15 = $1310.72. We'll set the budget a bit higher.
-const TOTAL_BUDGET_LIMIT_USD = 1500;
+export interface BudgetAlarmsStackProps extends StackProps {
+  budgetLimit?: number;
+  numberOfAlarms?: number;
+  initialThreshold?: number;
+}
 
 export class AwsBudgetAlarmsStack extends Stack {
-  constructor(scope: Construct, id: string, props?: StackProps) {
+  private readonly TOTAL_BUDGET_LIMIT_USD: number;
+  private readonly NUMBER_OF_ALARMS: number;
+  private readonly INITIAL_THRESHOLD: number;
+
+  constructor(scope: Construct, id: string, props?: BudgetAlarmsStackProps) {
     super(scope, id, props);
+
+    // Set defaults or use provided values
+    // The total budget limit needs to be higher than your highest alarm.
+    // The highest alarm is $0.04 * 2^15 = $1310.72. We'll set the budget a bit higher.
+    this.TOTAL_BUDGET_LIMIT_USD = props?.budgetLimit ?? 1500;
+    this.NUMBER_OF_ALARMS = props?.numberOfAlarms ?? 16;
+    this.INITIAL_THRESHOLD = props?.initialThreshold ?? 0.04;
 
     // --- Configuration ---
     // Get email from environment variable or use default
@@ -44,13 +57,19 @@ export class AwsBudgetAlarmsStack extends Stack {
 
     // --- 3. Generate the 16 Alarm Thresholds ---
     // We will generate all 16, then split them into two arrays.
-    const allNotifications = [];
-    const numberOfAlarms = 16;
-    let currentThreshold = 0.04; // Start at 4 cents
+    const allNotifications = this.generateNotifications(budgetTopic);
 
-    for (let i = 0; i < numberOfAlarms; i++) {
+    // --- 4. Create the TWO AWS Budget Resources ---
+    this.createBudgets(allNotifications);
+  }
+
+  private generateNotifications(budgetTopic: sns.Topic) {
+    const allNotifications = [];
+    let currentThreshold = this.INITIAL_THRESHOLD; // Use local variable
+
+    for (let i = 0; i < this.NUMBER_OF_ALARMS; i++) {
       const thresholdPercentage =
-        (currentThreshold / TOTAL_BUDGET_LIMIT_USD) * 100;
+        (currentThreshold / this.TOTAL_BUDGET_LIMIT_USD) * 100;
       allNotifications.push({
         notification: {
           notificationType: "ACTUAL",
@@ -68,8 +87,10 @@ export class AwsBudgetAlarmsStack extends Stack {
       currentThreshold *= 2;
     }
 
-    // --- 4. Create the TWO AWS Budget Resources ---
+    return allNotifications;
+  }
 
+  private createBudgets(allNotifications: any[]) {
     // **Budget 1: Contains the first 8 notifications**
     new budgets.CfnBudget(this, "MonthlyAccountBudgetPart1", {
       budget: {
@@ -77,7 +98,7 @@ export class AwsBudgetAlarmsStack extends Stack {
         budgetType: "COST",
         timeUnit: "MONTHLY",
         budgetLimit: {
-          amount: TOTAL_BUDGET_LIMIT_USD,
+          amount: this.TOTAL_BUDGET_LIMIT_USD,
           unit: "USD",
         },
       },
@@ -93,7 +114,7 @@ export class AwsBudgetAlarmsStack extends Stack {
         budgetType: "COST",
         timeUnit: "MONTHLY",
         budgetLimit: {
-          amount: TOTAL_BUDGET_LIMIT_USD,
+          amount: this.TOTAL_BUDGET_LIMIT_USD,
           unit: "USD",
         },
       },
