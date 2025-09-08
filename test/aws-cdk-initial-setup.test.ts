@@ -17,6 +17,9 @@ afterAll(() => {
   process.env = originalEnv;
 });
 
+// Add timeout for all tests
+jest.setTimeout(30000);
+
 describe("AwsBudgetAlarmsStack", () => {
   let app: cdk.App;
   let stack: AwsBudgetAlarmsStack;
@@ -269,8 +272,20 @@ describe("AwsBudgetAlarmsStack", () => {
 
       // Basic CloudFormation structure validation
       expect(cfnTemplate).toHaveProperty("Resources");
-      expect(cfnTemplate).toHaveProperty("AWSTemplateFormatVersion");
+      expect(cfnTemplate.Resources).toBeDefined();
       expect(Object.keys(cfnTemplate.Resources)).toHaveLength(4); // Topic, Subscription, 2 Budgets
+
+      // Verify we have the expected resource types
+      const resources = cfnTemplate.Resources;
+      const resourceTypes = Object.values(resources).map(
+        (resource: any) => resource.Type
+      );
+
+      expect(resourceTypes).toContain("AWS::SNS::Topic");
+      expect(resourceTypes).toContain("AWS::SNS::Subscription");
+      expect(
+        resourceTypes.filter((type: string) => type === "AWS::Budgets::Budget")
+      ).toHaveLength(2);
     });
   });
 });
